@@ -13,14 +13,16 @@ import json
 import time
 import networkx
 import re
+import string
 
 from tube_graphs import tubeGraphs
+from colours import tubeDataFrames
 import tests_tfl
 
 
 class LineStatus:
 
-    def __init__(self): 
+    def __init__(self, line_id):
         self.colours = {
             # disruption colours
             "red": (255, 0, 0),
@@ -28,19 +30,6 @@ class LineStatus:
             "green" : (0, 255, 0),
             "white": (255, 255, 255),
             "off": (0, 0, 0),
-            # line colours
-            "bakerloo": (197, 98, 5),
-            "central": (227, 32, 23),
-            "circle": (255, 211, 0),
-            "district": (0, 120, 41),
-            "hammersmith-city": (236, 120, 155),
-            "jubilee": (160, 165, 169),
-            "metropolitan": (55, 0, 86),
-            "northern": (255, 255, 255),
-            "piccadilly": (8, 57, 190),
-            "victoria": (0, 152, 212),
-            "waterloo-city": (115, 176, 156),
-            "elizabeth": (145, 79, 177),
             }
 
 
@@ -48,23 +37,24 @@ class LineStatus:
             "Planned Closure": {"code": 0, "colour": self.colours['red'], "alt_words": []},
             "Part Closure": {"code": 0, "colour": self.colours['red'], "alt_words": ["No Service"]},
             "Severe Delays": {"code": 0, "colour": self.colours['orange'], "alt_words": []},
-            "Part Suspended": {"code": 0, "colour": self.colours['red'], "alt_words": ["No Service"]},
-            "Suspended": {"code": 0, "colour": self.colours['red'], "alt_words": []},
+            "Part Suspended": {"code": 0, "colour": self.colours['red'], "alt_words": []},
+            "Suspended": {"code": 0, "colour": self.colours['red'], "alt_words": ["No Service"]},
             "Delayed": {"code": 0, "colour": self.colours['orange'], "alt_words": []},
             "Minor Delays": {"code": 0, "colour": self.colours['orange'], "alt_words": []},
             "Good Service": {"code": 0, "colour": self.colours['green'], "alt_words": []},
-            "Part Closed": {"code": 0, "colour": self.colours['red'], "alt_words": []},
+            "Part Closed": {"code": 0, "colour": self.colours['red'], "alt_words": ["No Service"]},
             "Reduced Service": {"code": 0, "colour": self.colours['orange'], "alt_words": []},
             "Special Service": {"code": 0, "colour": self.colours['orange'], "alt_words": []},
             "Bus Service": {"code": 0, "colour": self.colours['red'], "alt_words": []},
             "No Step Free Access": {"code": 0, "colour": self.colours['green'], "alt_words": []},
             "Change of Frequency": {"code": 0, "colour": self.colours['orange'], "alt_words": []},
             "Diverted": {"code": 0, "colour": self.colours['red'], "alt_words": []},
-            "Not Running": {"code": 0, "colour": self.colours['red'], "alt_words": []},
+            "Not Running": {"code": 0, "colour": self.colours['red'], "alt_words": ["No Service"]},
             "Issues Reported": {"code": 0, "colour": self.colours['orange'], "alt_words": []},
             "No Issues": {"code": 0, "colour": self.colours['green'], "alt_words": []},
             "Information": {"code": 0, "colour": self.colours['green'], "alt_words": []},
-            "Service Closed": {"code": 0, "colour": self.colours['red'], "alt_words": []},
+            "Service Closed": {"code": 0, "colour": self.colours['red'], "alt_words": ["No Service"]},
+            "No Service" : {"code": 0, "colour": self.colours['red'], "alt_words": []}
         }
         
         # Collect all descriptions and alt words into one list
@@ -77,9 +67,15 @@ class LineStatus:
         # Create regex pattern to match any of them (case-insensitive, word-boundaries)
         self.pattern = r'(?i)\b(' + '|'.join(re.escape(p.lower()) for p in severity_phrases) + r')\b'
 
+        # Initialise current line
+        self.line = line_id
+
+        # Initialise other modules
+        self.tubegraphs = tubeGraphs()
+        self.tubedfs = tubeDataFrames()
 
 
-    def get_line_status(line_id: str) -> dict | None:
+    def get_line_status(self) -> dict | None:
         """
         Get the current status of the TFL line.
     
@@ -95,7 +91,7 @@ class LineStatus:
     
         """
     
-        response = requests.get(f"https://api.tfl.gov.uk/Line/{line_id}/Status")
+        response = requests.get(f"https://api.tfl.gov.uk/Line/{self.line_id}/Status", timeout=1000)
         
         if response.status_code == 200:
             data = response.json()[0]
@@ -132,16 +128,21 @@ class LineStatus:
             severity_number = status["statusSeverity"]
             # compile descriptions
             descriptions = [status["statusSeverityDescription"]] + self.severity_codes[status["statusSeverityDescription"]]["alt_words"]
-            print(f"{severity_number} - {descriptions}: {reason}")
+            print(f"Whole Message: {severity_number} - {descriptions}: {reason}")
             # obtain the problematic stations and their issue
-            results[severity_number] = self.parse_description(reason, descriptions)
+            problem_stations = self.parse_description(reason, descriptions)
         
-        return results
+        return problem_stations
     
+    def apply_colours(problem_stations):
+        # change problem to colours
+
+        # apply colours
+        pass
     
     @staticmethod
     def split_reason_phrase(reason: str, pattern: str) -> list[str]:
-        # split sentences and have them contain the desruption description
+        # split sentences and have them contain the disruption description
         matches = list(re.finditer(pattern, reason.lower()))
         sentences = []
         for i, match in enumerate(matches):
@@ -169,11 +170,9 @@ class LineStatus:
         Returns
         -------
         dict
-            Dictionary of {station: {
-                station_code,
-                station_LED_ID,
-                station_array_coord,
-                station_colour
+            Dictionary of {description: {
+                colour: tuple,
+                stations: list,
                 }}.
     
         """
@@ -187,13 +186,14 @@ class LineStatus:
             # check if description is in the closure sentence message
             for description in descriptions:
                 if description.lower() in sentence.lower():
-                    # obtain identifer of which stations relate to the description
-                    
+                    stations[description] = {"stations": [], "colour": self.severity_codes[description]["colour"]}
+                    #stations[description] = []
+                    # obtain identifier of which stations relate to the description
+
                     # if "all" used get all stations
                     if " all " in sentence:
                         print("-> all present")
-                        #stations = tubeGraphs().bakerloo_stations # these are objects in tube_graphs
-                        pass
+                        stations[description]["stations"] = stations[description]["stations"] + tubeGraphs().line_dict[self.line]["all_stations"] # these are objects in tube_graphs
                     
                     # if "rest" used get remaining stations -> after all sentences parsed!
                     if " rest " in sentence:
@@ -203,10 +203,12 @@ class LineStatus:
                     if " between " in sentence:
                         between_stations = re.findall(r' between ([\w\s]+) and ([\w\s]+)', sentence)
                         print("-> between present: ", between_stations)
-                        # find relevant stations
-                    
-                        # add to colour
-                        stations[description] = between_stations
+                        for between in between_stations:
+                            if len(between) > 2:
+                                print(f"WARNING - >2 between stations ({between}), handling may be improper") # may need to handle a 3rd 'via'
+                            # find relevant stations
+                            error_stations = self.tubegraphs.shortest_path_nodes(self.line, between[0], between[1])
+                            stations[description]["stations"] = stations[description]["stations"] + error_stations
         
         return stations
     
@@ -217,8 +219,9 @@ class LineStatus:
 if __name__ == "__main__":
     #data = get_line_status("district")
     data = tests_tfl.weird_part_closure
-    status = LineStatus()
+    status = LineStatus("district")
     stations = status.get_issue_stations(data) # should be a list of stations
+    print(stations)
 
 
 
